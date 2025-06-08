@@ -779,6 +779,7 @@ export class AgentLoop {
 
         // Retry loop for transient errors. Up to MAX_RETRIES attempts.
         const MAX_RETRIES = 8;
+        let removeTools = false;
         for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
           try {
             let reasoning: Reasoning | undefined;
@@ -827,12 +828,12 @@ export class AgentLoop {
                     store: true,
                     previous_response_id: lastResponseId || undefined,
                   }),
-              tools: tools,
-              // Explicitly tell the model it is allowed to pick whatever
-              // tool it deems appropriate.  Omitting this sometimes leads to
-              // the model ignoring the available tools and responding with
-              // plain text instead (resulting in a missing tool‑call).
-              tool_choice: "auto",
+              ...(removeTools
+                ? {}
+                : {
+                    tools: tools,
+                    tool_choice: "auto",
+                  }),
             });
             break;
           } catch (error) {
@@ -955,6 +956,18 @@ export class AgentLoop {
                 status !== 429) ||
               errCtx.code === "invalid_request_error" ||
               errCtx.type === "invalid_request_error";
+
+            const unsupportedTools =
+              this.config.provider?.toLowerCase() === "ollama" &&
+              typeof errCtx.message === "string" &&
+              /does not support tools/i.test(errCtx.message);
+            if (unsupportedTools && !removeTools) {
+              log(
+                "Server indicated tools are unsupported; retrying without tool parameters...",
+              );
+              removeTools = true;
+              continue;
+            }
             if (isClientError) {
               this.onItem({
                 id: `error-${Date.now()}`,
@@ -1196,7 +1209,6 @@ export class AgentLoop {
                         this.oai,
                         params as ResponseCreateParams & { stream: true },
                       );
-
               log(
                 "agentLoop.run(): responseCall(1): turnInput: " +
                   JSON.stringify(turnInput),
